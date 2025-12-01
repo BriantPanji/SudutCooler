@@ -11,26 +11,36 @@ import javax.swing.*;
 import javax.swing.table.DefaultTableModel;
 import javax.swing.table.JTableHeader;
 import java.awt.*;
+import java.awt.event.*;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.List;
 
 public class CashierPanel extends JPanel {
-    private JComboBox<Product> cmbProduct;
-    private JSpinner spnQuantity;
-    private JButton btnAddItem, btnRemoveItem, btnPay, btnCancel;
     private JTable tableCart;
     private DefaultTableModel cartModel;
+    private JTextField txtSearch;
+    private JList<Product> productList;
+    private DefaultListModel<Product> productListModel;
+    private JPopupMenu searchPopup;
+    private JSpinner spnQuantity;
     private JLabel lblTotal;
+    private JButton btnAddToCart, btnRemove, btnCancel, btnPay;
+    private JTextArea txtProductInfo;
+
     private ProductDAO productDAO;
     private TransactionDAO transactionDAO;
     private User currentUser;
     private double totalAmount = 0;
 
+    private List<Product> allProducts;
+    private Product selectedProduct = null;
+
     // Modern color scheme
     private static final Color PRIMARY_COLOR = new Color(52, 152, 219);
     private static final Color SUCCESS_COLOR = new Color(46, 204, 113);
     private static final Color DANGER_COLOR = new Color(231, 76, 60);
+    private static final Color WARNING_COLOR = new Color(241, 196, 15);
     private static final Color BG_COLOR = new Color(236, 240, 241);
     private static final Color TEXT_DARK = new Color(44, 62, 80);
 
@@ -47,41 +57,165 @@ public class CashierPanel extends JPanel {
         setBackground(BG_COLOR);
         setBorder(BorderFactory.createEmptyBorder(15, 15, 15, 15));
 
-        // Top Panel
-        JPanel topCard = new JPanel(new FlowLayout(FlowLayout.LEFT, 15, 0));
-        topCard.setBackground(Color.WHITE);
-        topCard.setBorder(BorderFactory.createCompoundBorder(
+        // Left Panel - Product Selection
+        JPanel leftPanel = new JPanel(new BorderLayout(10, 10));
+        leftPanel.setBackground(Color.WHITE);
+        leftPanel.setBorder(BorderFactory.createCompoundBorder(
                 BorderFactory.createLineBorder(new Color(189, 195, 199), 1),
-                BorderFactory.createEmptyBorder(20, 25, 20, 25)));
+                BorderFactory.createEmptyBorder(20, 20, 20, 20)));
 
-        JLabel lblTitle = new JLabel("Pilih Produk:");
-        lblTitle.setFont(new Font("Segoe UI", Font.BOLD, 15));
-        lblTitle.setForeground(TEXT_DARK);
-        topCard.add(lblTitle);
+        JLabel titleLeft = new JLabel("Pilih Produk");
+        titleLeft.setFont(new Font("Segoe UI", Font.BOLD, 18));
+        titleLeft.setForeground(TEXT_DARK);
 
-        cmbProduct = new JComboBox<>();
-        cmbProduct.setFont(new Font("Segoe UI", Font.PLAIN, 14));
-        cmbProduct.setPreferredSize(new Dimension(350, 40));
-        topCard.add(cmbProduct);
+        // Search Panel
+        JPanel searchPanel = new JPanel(new BorderLayout(10, 10));
+        searchPanel.setBackground(Color.WHITE);
+
+        JLabel lblSearch = new JLabel("Cari Produk:");
+        lblSearch.setFont(new Font("Segoe UI", Font.BOLD, 14));
+        lblSearch.setForeground(TEXT_DARK);
+
+        // Searchable TextField with autocomplete
+        txtSearch = new JTextField();
+        txtSearch.setFont(new Font("Segoe UI", Font.PLAIN, 15));
+        txtSearch.setPreferredSize(new Dimension(0, 40));
+        txtSearch.setBorder(BorderFactory.createCompoundBorder(
+                BorderFactory.createLineBorder(PRIMARY_COLOR, 2),
+                BorderFactory.createEmptyBorder(8, 12, 8, 12)));
+
+        // Placeholder text
+        txtSearch.setForeground(Color.GRAY);
+        txtSearch.setText("Ketik nama produk...");
+        txtSearch.addFocusListener(new FocusAdapter() {
+            @Override
+            public void focusGained(FocusEvent e) {
+                if (txtSearch.getText().equals("Ketik nama produk...")) {
+                    txtSearch.setText("");
+                    txtSearch.setForeground(TEXT_DARK);
+                }
+            }
+
+            @Override
+            public void focusLost(FocusEvent e) {
+                if (txtSearch.getText().isEmpty()) {
+                    txtSearch.setForeground(Color.GRAY);
+                    txtSearch.setText("Ketik nama produk...");
+                }
+            }
+        });
+
+        // Create popup for search results
+        searchPopup = new JPopupMenu();
+        searchPopup.setBorder(BorderFactory.createLineBorder(PRIMARY_COLOR, 2));
+        searchPopup.setFocusable(false); // FIXED: prevent focus steal
+
+        productListModel = new DefaultListModel<>();
+        productList = new JList<>(productListModel);
+        productList.setFont(new Font("Segoe UI", Font.PLAIN, 14));
+        productList.setSelectionMode(ListSelectionModel.SINGLE_SELECTION);
+        productList.setCellRenderer(new ProductListCellRenderer());
+        productList.setVisibleRowCount(6);
+        productList.setFocusable(false); // FIXED: prevent focus steal
+
+        JScrollPane listScrollPane = new JScrollPane(productList);
+        listScrollPane.setPreferredSize(new Dimension(txtSearch.getWidth(), 200));
+        listScrollPane.setBorder(null);
+        listScrollPane.setFocusable(false); // FIXED: prevent focus steal
+
+        searchPopup.add(listScrollPane);
+
+        // Search listener
+        txtSearch.addKeyListener(new KeyAdapter() {
+            @Override
+            public void keyReleased(KeyEvent e) {
+                if (e.getKeyCode() == KeyEvent.VK_ENTER) {
+                    selectProductFromList();
+                } else if (e.getKeyCode() == KeyEvent.VK_ESCAPE) {
+                    searchPopup.setVisible(false);
+                } else {
+                    filterProducts();
+                }
+            }
+        });
+
+        // List selection listener - only for mouse click
+        productList.addMouseListener(new MouseAdapter() {
+            @Override
+            public void mouseClicked(MouseEvent e) {
+                selectProductFromList();
+            }
+        });
+
+        searchPanel.add(lblSearch, BorderLayout.NORTH);
+        searchPanel.add(txtSearch, BorderLayout.CENTER);
+
+        // Selected Product Info Panel
+        JPanel productInfoPanel = new JPanel(new BorderLayout(5, 5));
+        productInfoPanel.setBackground(new Color(245, 245, 245));
+        productInfoPanel.setBorder(BorderFactory.createCompoundBorder(
+                BorderFactory.createLineBorder(new Color(200, 200, 200), 1),
+                BorderFactory.createEmptyBorder(15, 15, 15, 15)));
+
+        JLabel lblProductInfo = new JLabel("Produk Dipilih:");
+        lblProductInfo.setFont(new Font("Segoe UI", Font.BOLD, 13));
+        lblProductInfo.setForeground(TEXT_DARK);
+
+        txtProductInfo = new JTextArea();
+        txtProductInfo.setEditable(false);
+        txtProductInfo.setFont(new Font("Segoe UI", Font.PLAIN, 13));
+        txtProductInfo.setBackground(new Color(245, 245, 245));
+        txtProductInfo.setBorder(null);
+        txtProductInfo.setText("Belum ada produk dipilih");
+        txtProductInfo.setRows(4);
+
+        productInfoPanel.add(lblProductInfo, BorderLayout.NORTH);
+        productInfoPanel.add(txtProductInfo, BorderLayout.CENTER);
+
+        // Quantity Panel
+        JPanel quantityPanel = new JPanel(new FlowLayout(FlowLayout.LEFT, 10, 10));
+        quantityPanel.setBackground(Color.WHITE);
 
         JLabel lblQty = new JLabel("Jumlah:");
         lblQty.setFont(new Font("Segoe UI", Font.BOLD, 14));
         lblQty.setForeground(TEXT_DARK);
-        topCard.add(lblQty);
 
-        spnQuantity = new JSpinner(new SpinnerNumberModel(1, 1, 1000, 1));
+        spnQuantity = new JSpinner(new SpinnerNumberModel(1, 1, 999, 1));
         spnQuantity.setFont(new Font("Segoe UI", Font.PLAIN, 14));
-        spnQuantity.setPreferredSize(new Dimension(100, 40));
-        ((JSpinner.DefaultEditor) spnQuantity.getEditor()).getTextField().setHorizontalAlignment(JTextField.CENTER);
-        topCard.add(spnQuantity);
+        ((JSpinner.DefaultEditor) spnQuantity.getEditor()).getTextField().setColumns(5);
+        spnQuantity.setPreferredSize(new Dimension(80, 35));
 
-        btnAddItem = createStyledButton("[+] Tambah", PRIMARY_COLOR);
-        btnAddItem.setPreferredSize(new Dimension(200, 40));
-        btnAddItem.addActionListener(e -> addToCart());
-        topCard.add(btnAddItem);
+        btnAddToCart = createStyledButton("[+] TAMBAH KE KERANJANG", SUCCESS_COLOR);
+        btnAddToCart.setPreferredSize(new Dimension(220, 45));
+        btnAddToCart.setFont(new Font("Segoe UI", Font.BOLD, 14));
+        btnAddToCart.addActionListener(e -> addToCart());
+
+        quantityPanel.add(lblQty);
+        quantityPanel.add(spnQuantity);
+        quantityPanel.add(btnAddToCart);
+
+        JPanel leftContent = new JPanel(new BorderLayout(10, 15));
+        leftContent.setBackground(Color.WHITE);
+        leftContent.add(searchPanel, BorderLayout.NORTH);
+        leftContent.add(productInfoPanel, BorderLayout.CENTER);
+        leftContent.add(quantityPanel, BorderLayout.SOUTH);
+
+        leftPanel.add(titleLeft, BorderLayout.NORTH);
+        leftPanel.add(leftContent, BorderLayout.CENTER);
+
+        // Right Panel - Shopping Cart
+        JPanel rightPanel = new JPanel(new BorderLayout(10, 10));
+        rightPanel.setBackground(Color.WHITE);
+        rightPanel.setBorder(BorderFactory.createCompoundBorder(
+                BorderFactory.createLineBorder(new Color(189, 195, 199), 1),
+                BorderFactory.createEmptyBorder(20, 20, 20, 20)));
+
+        JLabel titleRight = new JLabel("Keranjang Belanja");
+        titleRight.setFont(new Font("Segoe UI", Font.BOLD, 18));
+        titleRight.setForeground(TEXT_DARK);
 
         // Cart Table
-        String[] columns = { "Produk", "Harga", "Jumlah", "Subtotal" };
+        String[] columns = { "Produk", "Harga", "Qty", "Subtotal" };
         cartModel = new DefaultTableModel(columns, 0) {
             @Override
             public boolean isCellEditable(int row, int column) {
@@ -91,7 +225,7 @@ public class CashierPanel extends JPanel {
 
         tableCart = new JTable(cartModel);
         tableCart.setFont(new Font("Segoe UI", Font.PLAIN, 14));
-        tableCart.setRowHeight(32);
+        tableCart.setRowHeight(35);
         tableCart.setSelectionBackground(new Color(52, 152, 219, 50));
         tableCart.setSelectionForeground(TEXT_DARK);
 
@@ -102,82 +236,162 @@ public class CashierPanel extends JPanel {
         header.setPreferredSize(new Dimension(0, 40));
 
         JScrollPane scrollPane = new JScrollPane(tableCart);
-        scrollPane.setBorder(BorderFactory.createCompoundBorder(
-                BorderFactory.createLineBorder(new Color(189, 195, 199), 1),
-                BorderFactory.createEmptyBorder(5, 5, 5, 5)));
-
-        // Bottom Panel
-        JPanel bottomPanel = new JPanel(new BorderLayout(15, 15));
-        bottomPanel.setBackground(BG_COLOR);
+        scrollPane.setBorder(BorderFactory.createLineBorder(new Color(189, 195, 199), 1));
 
         // Total Panel
-        JPanel totalCard = new JPanel();
-        totalCard.setBackground(Color.WHITE);
-        totalCard.setBorder(BorderFactory.createCompoundBorder(
-                BorderFactory.createLineBorder(new Color(189, 195, 199), 1),
-                BorderFactory.createEmptyBorder(20, 30, 20, 30)));
-        totalCard.setLayout(new FlowLayout(FlowLayout.CENTER, 20, 0));
+        JPanel totalPanel = new JPanel(new BorderLayout(10, 10));
+        totalPanel.setBackground(new Color(44, 62, 80));
+        totalPanel.setBorder(BorderFactory.createEmptyBorder(20, 20, 20, 20));
 
-        JLabel lblTotalLabel = new JLabel("TOTAL PEMBAYARAN:");
-        lblTotalLabel.setFont(new Font("Segoe UI", Font.BOLD, 18));
-        lblTotalLabel.setForeground(TEXT_DARK);
+        JLabel lblTotalLabel = new JLabel("TOTAL:");
+        lblTotalLabel.setFont(new Font("Segoe UI", Font.BOLD, 16));
+        lblTotalLabel.setForeground(Color.WHITE);
 
         lblTotal = new JLabel("Rp 0");
         lblTotal.setFont(new Font("Segoe UI", Font.BOLD, 32));
-        lblTotal.setForeground(SUCCESS_COLOR);
+        lblTotal.setForeground(new Color(46, 204, 113));
+        lblTotal.setHorizontalAlignment(SwingConstants.RIGHT);
 
-        totalCard.add(lblTotalLabel);
-        totalCard.add(lblTotal);
+        totalPanel.add(lblTotalLabel, BorderLayout.WEST);
+        totalPanel.add(lblTotal, BorderLayout.CENTER);
 
         // Button Panel
-        JPanel buttonPanel = new JPanel(new FlowLayout(FlowLayout.CENTER, 15, 15));
+        JPanel buttonPanel = new JPanel(new FlowLayout(FlowLayout.RIGHT, 10, 0));
         buttonPanel.setBackground(Color.WHITE);
-        buttonPanel.setBorder(BorderFactory.createCompoundBorder(
-                BorderFactory.createLineBorder(new Color(189, 195, 199), 1),
-                BorderFactory.createEmptyBorder(15, 20, 15, 20)));
 
-        btnRemoveItem = createStyledButton("[X] Hapus Item", DANGER_COLOR);
-        btnRemoveItem.setPreferredSize(new Dimension(160, 45));
-        btnRemoveItem.addActionListener(e -> removeFromCart());
+        btnRemove = createStyledButton("[X] Hapus Item", DANGER_COLOR);
+        btnRemove.setPreferredSize(new Dimension(140, 45));
+        btnRemove.addActionListener(e -> removeItem());
 
-        btnCancel = createStyledButton("Batal", new Color(149, 165, 166));
-        btnCancel.setPreferredSize(new Dimension(150, 45));
-        btnCancel.addActionListener(e -> clearCart());
+        btnCancel = createStyledButton("Batalkan", WARNING_COLOR);
+        btnCancel.setPreferredSize(new Dimension(140, 45));
+        btnCancel.addActionListener(e -> clearCart(true)); // With confirmation
 
         btnPay = createStyledButton("[$] BAYAR", SUCCESS_COLOR);
-        btnPay.setPreferredSize(new Dimension(180, 55));
+        btnPay.setPreferredSize(new Dimension(180, 45));
         btnPay.setFont(new Font("Segoe UI", Font.BOLD, 16));
         btnPay.addActionListener(e -> processPayment());
 
-        buttonPanel.add(btnRemoveItem);
+        buttonPanel.add(btnRemove);
         buttonPanel.add(btnCancel);
         buttonPanel.add(btnPay);
 
-        bottomPanel.add(totalCard, BorderLayout.NORTH);
-        bottomPanel.add(buttonPanel, BorderLayout.CENTER);
+        rightPanel.add(titleRight, BorderLayout.NORTH);
+        rightPanel.add(scrollPane, BorderLayout.CENTER);
+        rightPanel.add(totalPanel, BorderLayout.SOUTH);
 
-        add(topCard, BorderLayout.NORTH);
-        add(scrollPane, BorderLayout.CENTER);
-        add(bottomPanel, BorderLayout.SOUTH);
+        JPanel rightContainer = new JPanel(new BorderLayout(10, 10));
+        rightContainer.setBackground(Color.WHITE);
+        rightContainer.add(rightPanel, BorderLayout.CENTER);
+        rightContainer.add(buttonPanel, BorderLayout.SOUTH);
+
+        // Main Layout
+        JSplitPane splitPane = new JSplitPane(JSplitPane.HORIZONTAL_SPLIT, leftPanel, rightContainer);
+        splitPane.setDividerLocation(450);
+        splitPane.setResizeWeight(0.35);
+        splitPane.setBorder(null);
+
+        add(splitPane, BorderLayout.CENTER);
+    }
+
+    // Custom cell renderer for product list
+    private class ProductListCellRenderer extends DefaultListCellRenderer {
+        @Override
+        public Component getListCellRendererComponent(JList<?> list, Object value, int index,
+                boolean isSelected, boolean cellHasFocus) {
+            JLabel label = (JLabel) super.getListCellRendererComponent(list, value, index, isSelected, cellHasFocus);
+
+            if (value instanceof Product) {
+                Product product = (Product) value;
+                String displayText = String.format(
+                        "<html><b>%s</b> - %s<br><font color='#666'>Harga: Rp %.0f | Stok: %d</font></html>",
+                        product.getNama(),
+                        product.getKode(),
+                        product.getHarga(),
+                        product.getStok());
+                label.setText(displayText);
+                label.setBorder(BorderFactory.createEmptyBorder(8, 10, 8, 10));
+            }
+
+            if (isSelected) {
+                label.setBackground(new Color(52, 152, 219, 100));
+            }
+
+            return label;
+        }
+    }
+
+    private void filterProducts() {
+        String keyword = txtSearch.getText().trim();
+
+        if (keyword.isEmpty() || keyword.equals("Ketik nama produk...")) {
+            searchPopup.setVisible(false);
+            return;
+        }
+
+        productListModel.clear();
+        List<Product> filtered = new ArrayList<>();
+
+        for (Product p : allProducts) {
+            if (p.getNama().toLowerCase().contains(keyword.toLowerCase()) ||
+                    p.getKode().toLowerCase().contains(keyword.toLowerCase())) {
+                filtered.add(p);
+            }
+        }
+
+        if (!filtered.isEmpty()) {
+            for (Product p : filtered) {
+                productListModel.addElement(p);
+            }
+
+            // Show popup below txtSearch
+            searchPopup.setPopupSize(txtSearch.getWidth(), Math.min(200, filtered.size() * 60));
+            searchPopup.show(txtSearch, 0, txtSearch.getHeight());
+
+            // IMPORTANT: Return focus to txtSearch immediately
+            SwingUtilities.invokeLater(() -> txtSearch.requestFocusInWindow());
+        } else {
+            searchPopup.setVisible(false);
+        }
+    }
+
+    private void selectProductFromList() {
+        Product selected = productList.getSelectedValue();
+        if (selected != null) {
+            selectedProduct = selected;
+            txtSearch.setText(selected.getNama() + " - " + selected.getKode());
+            txtSearch.setForeground(TEXT_DARK);
+            searchPopup.setVisible(false);
+
+            // Update product info
+            txtProductInfo.setText(String.format(
+                    "Produk: %s\nKode: %s\nHarga: Rp %.0f\nStok: %d",
+                    selectedProduct.getNama(),
+                    selectedProduct.getKode(),
+                    selectedProduct.getHarga(),
+                    selectedProduct.getStok()));
+
+            spnQuantity.requestFocus();
+        }
     }
 
     private JButton createStyledButton(String text, Color bgColor) {
         JButton button = new JButton(text);
-        button.setFont(new Font("Segoe UI", Font.BOLD, 14));
+        button.setFont(new Font("Segoe UI", Font.BOLD, 13));
         button.setBackground(bgColor);
         button.setForeground(Color.WHITE);
         button.setFocusPainted(false);
         button.setBorderPainted(false);
         button.setCursor(new Cursor(Cursor.HAND_CURSOR));
 
-        button.addMouseListener(new java.awt.event.MouseAdapter() {
+        button.addMouseListener(new MouseAdapter() {
             Color originalColor = bgColor;
 
-            public void mouseEntered(java.awt.event.MouseEvent evt) {
+            public void mouseEntered(MouseEvent evt) {
                 button.setBackground(bgColor.darker());
             }
 
-            public void mouseExited(java.awt.event.MouseEvent evt) {
+            public void mouseExited(MouseEvent evt) {
                 button.setBackground(originalColor);
             }
         });
@@ -186,17 +400,12 @@ public class CashierPanel extends JPanel {
     }
 
     private void loadProducts() {
-        cmbProduct.removeAllItems();
-        List<Product> products = productDAO.getAllProducts();
-        for (Product p : products) {
-            if (p.getStok() > 0) {
-                cmbProduct.addItem(p);
-            }
-        }
+        allProducts = productDAO.getAllProducts();
+        // Filter only products with stock > 0
+        allProducts.removeIf(p -> p.getStok() <= 0);
     }
 
     private void addToCart() {
-        Product selectedProduct = (Product) cmbProduct.getSelectedItem();
         if (selectedProduct == null) {
             JOptionPane.showMessageDialog(this, "Pilih produk terlebih dahulu!");
             return;
@@ -245,16 +454,39 @@ public class CashierPanel extends JPanel {
 
         updateTotal();
         spnQuantity.setValue(1);
+
+        // Clear selection
+        txtSearch.setText("");
+        txtSearch.setForeground(Color.GRAY);
+        txtSearch.setText("Ketik nama produk...");
+        txtProductInfo.setText("Belum ada produk dipilih");
+        selectedProduct = null;
+        txtSearch.requestFocus();
     }
 
-    private void removeFromCart() {
+    private void removeItem() {
         int selectedRow = tableCart.getSelectedRow();
         if (selectedRow == -1) {
             JOptionPane.showMessageDialog(this, "Pilih item yang akan dihapus!");
             return;
         }
-
         cartModel.removeRow(selectedRow);
+        updateTotal();
+    }
+
+    private void clearCart(boolean showConfirmation) {
+        if (showConfirmation) {
+            int confirm = JOptionPane.showConfirmDialog(this,
+                    "Batalkan semua transaksi?",
+                    "Konfirmasi",
+                    JOptionPane.YES_NO_OPTION);
+
+            if (confirm != JOptionPane.YES_OPTION) {
+                return;
+            }
+        }
+
+        cartModel.setRowCount(0);
         updateTotal();
     }
 
@@ -290,7 +522,7 @@ public class CashierPanel extends JPanel {
                 String productStr = cartModel.getValueAt(i, 0).toString();
                 // Format: "Nama - Kode", ambil kode setelah " - "
                 String[] parts = productStr.split(" - ");
-                String productCode = parts[parts.length - 1]; // Ambil bagian terakhir (kode)
+                String productCode = parts[parts.length - 1];
                 Product product = productDAO.getProductByCode(productCode);
 
                 int quantity = (int) cartModel.getValueAt(i, 2);
@@ -311,7 +543,7 @@ public class CashierPanel extends JPanel {
                         "Pembayaran berhasil!\nTotal: Rp " + String.format("%.0f", totalAmount),
                         "Sukses",
                         JOptionPane.INFORMATION_MESSAGE);
-                clearCart();
+                clearCart(false); // FIXED: No confirmation after successful payment
                 loadProducts();
             } else {
                 JOptionPane.showMessageDialog(this,
@@ -322,14 +554,9 @@ public class CashierPanel extends JPanel {
         }
     }
 
-    private void clearCart() {
-        cartModel.setRowCount(0);
-        totalAmount = 0;
-        lblTotal.setText("Rp 0");
-        spnQuantity.setValue(1);
-    }
-
     public void refresh() {
         loadProducts();
+        cartModel.setRowCount(0);
+        updateTotal();
     }
 }
